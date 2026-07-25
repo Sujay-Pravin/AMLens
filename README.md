@@ -78,6 +78,30 @@
   - **Merger & Error Handling**: Merges both outputs (rule-based injected into `_entities`). Includes robust `try/except` wrapping to gracefully degrade to `{"intent": "unknown"}` if the LLM fails, times out, or returns malformed JSON.
   - Fully tested against 8 varied queries and 1 intentional JSON malformation fallback scenario.
 
+### Phase 5 — Execution Planner ✅
+
+- **`app/agents/planner.py`** — deterministic, rule-based planner mapping parsed intents to an ordered list of analytics tools:
+  - `"summarize"` / `"investigate"` → includes `run_eda`
+  - `"detect_pattern"` or explicit `aml_pattern` → includes `generate_features`, `detect_rules`
+  - `"score_risk"` → includes `detect_anomalies`, `calculate_risk`
+  - `"unknown"` fallback → defaults to `['run_eda', 'detect_rules', 'calculate_risk']`
+  - Automatically de-duplicates the selected tools and strictly enforces execution order based on data dependencies.
+
+### Phase 6 — Tool Integration Layer ✅
+
+- **`app/tools/tool_manager.py`** — centralized dispatcher for executing analytics tools:
+  - **Tool Registry**: Dictionary mapping string names from the planner to callable Python functions.
+  - **Safe Execution**: Uses `ThreadPoolExecutor` to run tools asynchronously.
+  - **Timeout Enforcement**: Enforces `TOOL_TIMEOUT_SECONDS` (15s default). If a tool hangs, the agent moves on gracefully with an error in the state, preventing full pipeline lockup.
+  - **Error Isolation**: Catches all exceptions and normalizes them into `{"error": str(e)}` dicts so the LangGraph state remains stable.
+
+### Phase 7 — LangGraph Workflow ✅
+
+- **`app/agents/workflow.py`** — complete directed graph stitching all agents and tools together:
+  - **Nodes**: `intent` → `plan` → `execute` → `explain` (stubbed) → `recommend` (stubbed).
+  - **State Management**: Uses `AgentStateDict` to flow data through the pipeline, updating `parsed_intent`, `execution_plan`, `tool_outputs`, `risk_results`, and `trace`.
+  - **Execution**: `workflow.invoke()` runs the entire pipeline synchronously and successfully returns the populated state dictionary.
+
 ## 🚀 Quick Start
 
 ```bash
