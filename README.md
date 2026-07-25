@@ -115,6 +115,21 @@
   - Takes the `risk_band` computed by the analytics tools and translates it directly into an actionable step (e.g. `Critical` → "Escalate immediately and file a report.").
   - Hooked directly into the final stage of `workflow.py`.
 
+### Phase 10 — API Layer ✅
+
+- **`app/api/routes.py`** — wraps the orchestration graph into a robust REST API:
+  - `POST /query`: Processes natural language, executes the graph, and returns the full JSON state including narrative.
+  - `GET /health` and `GET /status`: Liveness and readiness probes.
+  - **Validation**: Strict Pydantic models validate all incoming requests, correctly returning HTTP 422 if an input is malformed, ensuring the LLM parser is never fed junk data.
+  - Hooked into `app/main.py`.
+
+### Phase 11 — End-to-End Testing ✅
+
+- **`tests/test_phase11.py`** — automated suite blasting 8 varied AML queries through the live API endpoint.
+- Validated that intent parsing, tool orchestration, risk computation, narrative generation, and recommendations flow perfectly together.
+- Total processing time is robust, gracefully handling network latencies to the Google GenAI backend. 
+- **The backend agent layer is 100% complete and ready for the real tool integration (Phase 12) and Frontend (Phase 13)!**
+
 ## 🚀 Quick Start
 
 ```bash

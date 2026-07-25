@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("AMLens API starting up")
     logger.info(f"  Environment : {settings.env}")
-    logger.info(f"  HF Model    : {settings.hf_model}")
+    logger.info(f"  Gemini Model: {settings.gemini_model}")
     logger.info(f"  Dummy tools : {settings.use_dummy_analytics}")
     logger.info("=" * 60)
     yield
@@ -56,20 +56,9 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     # --- Routes ---
-    # Stub health endpoint available immediately; full routes wired in Phase 10
-    @app.get("/health", tags=["System"])
-    async def health():
-        return {"status": "ok"}
-
-    @app.get("/status", tags=["System"])
-    async def status():
-        return {
-            "agent": "ready",
-            "environment": settings.env,
-            "model": settings.hf_model,
-            "dummy_analytics": settings.use_dummy_analytics,
-        }
-
+    from app.api.routes import router
+    app.include_router(router)
+    
     return app
 
 
