@@ -15,10 +15,10 @@
   - `langgraph`, `langchain-core`, `huggingface_hub`
   - `python-dotenv`, `dateparser`, `python-multipart`
   - `httpx`, `pytest`, `pytest-asyncio`
-- **`.env` + `.env.example`** — HuggingFace token, model config, app settings
+- **`.env` + `.env.example`** — Gemini API key, model config, app settings
 - **`.gitignore`** — venv, env files, pycache, IDE, OS artifacts
-- **`verify_hf.py`** — standalone HF connectivity test with clear error messages and backup model suggestions
-- **HuggingFace verified** — Llama-3.1-8B-Instruct confirmed live and responding
+- **`verify_ai.py`** — standalone Google AI connectivity test with clear error messages
+- **Google AI verified** — gemma-4-31b-it confirmed live and responding
 - **Full directory skeleton** created with all `__init__.py` files across 6 subpackages
 
 ### Phase 1 — Backend Infrastructure ✅
@@ -70,6 +70,14 @@
   - Edge cases covered: empty rules, borderline scores, max risk scenarios
   - All outputs validate against `app/schemas/tool_io.py` Pydantic models
 
+### Phase 4 — Intent Parsing Agent ✅
+
+- **`app/agents/intent_parser.py`** — hybrid intent parser combining rule-based & LLM extraction:
+  - **Rule-based extraction**: High-precision extraction of dates, amounts ($, ₹), customer IDs (`CUST-xxx`), and country codes using `dateparser` and regex heuristics.
+  - **LLM extraction**: Google AI Studio (`gemma-4-31b-it`) for fuzzy fields: `intent` label, `aml_pattern`, `transaction_type`, and `threshold_amount`.
+  - **Merger & Error Handling**: Merges both outputs (rule-based injected into `_entities`). Includes robust `try/except` wrapping to gracefully degrade to `{"intent": "unknown"}` if the LLM fails, times out, or returns malformed JSON.
+  - Fully tested against 8 varied queries and 1 intentional JSON malformation fallback scenario.
+
 ## 🚀 Quick Start
 
 ```bash
@@ -87,10 +95,10 @@ pip install -r requirements.txt
 
 # 5. Configure environment
 cp .env.example .env
-# Edit .env with your HuggingFace token
+# Edit .env with your Google AI Studio API key
 
-# 6. Verify HF connectivity
-python verify_hf.py
+# 6. Verify Google AI Studio connectivity
+python verify_ai.py
 
 # 7. Start the server
 uvicorn app.main:app --reload --port 8000
@@ -103,9 +111,21 @@ curl http://localhost:8000/health
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `HF_TOKEN` | ✅ | — | HuggingFace API access token |
-| `HF_MODEL` | ❌ | `meta-llama/Llama-3.1-8B-Instruct` | Model for intent parsing + explanation |
+| `GEMINI_API_KEY` | ✅ | — | Google AI Studio API key |
+| `GEMINI_MODEL` | ❌ | `gemma-4-31b-it` | Model for intent parsing + explanation |
 | `ENV` | ❌ | `dev` | Environment (`dev` / `staging` / `prod`) |
 | `LOG_LEVEL` | ❌ | `INFO` | Logging level |
 | `TOOL_TIMEOUT_SECONDS` | ❌ | `15` | Max wait per analytics tool call |
 
+## 🛠️ Tech Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **API Framework** | FastAPI 0.115 | REST API with auto-generated Swagger docs |
+| **LLM** | Google AI Studio (genai SDK) | Intent parsing + explanation generation |
+| **Model** | gemma-4-31b-it | Instruction-tuned chat model |
+| **Orchestration** | LangGraph 0.4 | Explicit state graph with named nodes |
+| **Validation** | Pydantic 2.11 | Schema enforcement at every boundary |
+| **Config** | pydantic-settings | Type-safe env var loading |
+| **Frontend** | React + Vite | Query UI + results dashboard (Phase 13) |
+| **Python** | 3.13 | Latest stable (3.14 incompatible with pydantic-core) |

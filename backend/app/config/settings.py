@@ -11,11 +11,11 @@ from pydantic import Field
 class Settings(BaseSettings):
     """Global application settings, loaded from .env file and environment variables."""
 
-    # --- HuggingFace ---
-    hf_token: str = Field(..., description="HuggingFace API access token")
-    hf_model: str = Field(
-        default="meta-llama/Llama-3.1-8B-Instruct",
-        description="HF model ID for inference (intent parsing + explanation)",
+    # --- Google AI Studio / Gemini ---
+    gemini_api_key: str = Field(..., description="Google AI Studio API key")
+    gemini_model: str = Field(
+        default="gemma-4-31b-it",
+        description="Google AI model ID for inference (intent parsing + explanation)",
     )
 
     # --- Application ---

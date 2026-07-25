@@ -9,7 +9,7 @@ langgraph==0.4.1
 langchain-core==0.3.59
 
 # AI / LLM
-huggingface_hub==0.33.0
+google-genai==0.6.0
 
 # Utilities
 python-dotenv==1.1.0
