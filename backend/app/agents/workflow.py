@@ -91,26 +91,28 @@ def node_execute(state: AgentStateDict) -> AgentStateDict:
 
 def node_explain(state: AgentStateDict) -> AgentStateDict:
     """Node 4: Generate a compliance narrative explaining the results."""
-    logger.info("[Node: explain] Generating explanation (stubbed for Phase 7)")
+    from app.agents.explainer import explain
     
-    # Phase 8: This will call app.agents.explainer
-    # For now, we stub it so the graph compiles and runs.
+    logger.info("[Node: explain] Generating explanation via LLM")
+    
+    explanation = explain(state)
     
     return {
-        "explanation": "Explanation pending Phase 8 implementation.",
+        "explanation": explanation,
         "trace": state.get("trace", []) + ["explanation_generated"]
     }
 
 
 def node_recommend(state: AgentStateDict) -> AgentStateDict:
     """Node 5: Generate a final recommendation based on the risk band."""
-    logger.info("[Node: recommend] Generating recommendation (stubbed for Phase 7)")
+    from app.agents.recommender import recommend
     
-    # Phase 9: This will call app.agents.recommender
-    # For now, we stub it.
+    logger.info("[Node: recommend] Generating recommendation")
+    
+    recommendation = recommend(state)
     
     return {
-        "recommendation": "Recommendation pending Phase 9 implementation.",
+        "recommendation": recommendation,
         "trace": state.get("trace", []) + ["recommendation_generated"]
     }
 

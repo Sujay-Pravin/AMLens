@@ -102,6 +102,19 @@
   - **State Management**: Uses `AgentStateDict` to flow data through the pipeline, updating `parsed_intent`, `execution_plan`, `tool_outputs`, `risk_results`, and `trace`.
   - **Execution**: `workflow.invoke()` runs the entire pipeline synchronously and successfully returns the populated state dictionary.
 
+### Phase 8 — Explanation Agent ✅
+
+- **`app/agents/explainer.py`** — converts raw tool outputs into plain-language text:
+  - **Prompt Engineering**: Instructs Gemma 4 (31b) to act as a senior AML compliance analyst writing a 3-4 sentence narrative.
+  - **Integration**: Replaced the stub in `workflow.py` with the actual LLM call.
+  - **Fallback**: Wraps the call in a `try/except` block to return a graceful fallback string if the LLM is unreachable, protecting the pipeline.
+
+### Phase 9 — Recommendation Agent ✅
+
+- **`app/agents/recommender.py`** — deterministic, auditable risk recommendation:
+  - Takes the `risk_band` computed by the analytics tools and translates it directly into an actionable step (e.g. `Critical` → "Escalate immediately and file a report.").
+  - Hooked directly into the final stage of `workflow.py`.
+
 ## 🚀 Quick Start
 
 ```bash
