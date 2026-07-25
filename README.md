@@ -41,6 +41,35 @@
   - Exception handlers registered globally
   - Stub endpoints: `GET /health` and `GET /status`
 
+### Phase 2 — Shared State Schema ✅
+
+- **`app/agents/state.py`** — Core shared state for the LangGraph workflow:
+  - `AgentState(BaseModel)` with 11 fields: `user_query`, `filters`, `parsed_intent`, `entities`, `execution_plan`, `tool_outputs`, `risk_results`, `explanation`, `recommendation`, `trace`, `errors`
+  - `AgentStateDict(TypedDict)` adapter for LangGraph compatibility
+  - Round-trip conversion helpers: `state_to_dict()` / `dict_to_state()`
+- **`app/schemas/tool_io.py`** — Integration contract with Member 2 (5 output models):
+  - `EDAOutput`, `FeatureOutput`, `RuleOutput`, `AnomalyOutput`, `RiskOutput`
+  - Range validation on scores (`0.0–1.0`), `Literal` type on `risk_band`
+- **`app/schemas/requests.py`** — API request/response models:
+  - `QueryRequest` (validated: min 1 char, max 2000 chars)
+  - `QueryResponse` (mirrors AgentState, explanation + recommendation prioritized)
+  - `UploadRequest/Response` stubs, `HealthResponse`, `StatusResponse`
+- **`app/tools/tool_interfaces.py`** — Protocol classes for the 5 analytics functions (structural subtyping — Member 2 doesn't need to inherit anything)
+
+### Phase 3 — Dummy Analytics API ✅
+
+- **`app/tools/dummy_analytics.py`** — realistic stand-in for Member 2's 5 analytics functions:
+  - `run_eda()` — EDA summary with varied country pools and transaction volumes
+  - `generate_features()` — AML features (velocity, dormancy, cash ratio, cross-border %)
+  - `detect_rules()` — rule-based detection across 8 AML patterns with detailed hit info
+  - `detect_anomalies()` — ML anomaly scores with top anomalous account lists
+  - `calculate_risk()` — composite scoring (40% rules + 60% ML) with contributing factors
+- **Design features:**
+  - Deterministic seeding from filters → same query always produces same results (reproducible demos)
+  - Varied, believable data: different risk bands, country sets, pattern combinations
+  - Edge cases covered: empty rules, borderline scores, max risk scenarios
+  - All outputs validate against `app/schemas/tool_io.py` Pydantic models
+
 ## 🚀 Quick Start
 
 ```bash
