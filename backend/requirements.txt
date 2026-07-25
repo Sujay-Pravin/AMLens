@@ -1,0 +1,22 @@
+# Core API
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic==2.11.3
+pydantic-settings==2.9.1
+
+# Orchestration
+langgraph==0.4.1
+langchain-core==0.3.59
+
+# AI / LLM
+huggingface_hub==0.33.0
+
+# Utilities
+python-dotenv==1.1.0
+dateparser==1.2.1
+python-multipart==0.0.20
+
+# Testing
+httpx==0.28.1
+pytest==8.4.1
+pytest-asyncio==1.0.0
