@@ -1,183 +1,151 @@
-# AMLens — AI-Powered Suspicious Activity Detection
+# AMLens — AI-Powered AML Investigation System
 
-> An agentic AI system that turns natural-language AML queries into structured investigation plans, executes analytics tools, and returns explainable, actionable compliance answers.
+An end-to-end Anti-Money Laundering (AML) transaction network investigation system combining a Python analytics pipeline (validation → preprocessing → features → rules → ML inference + SHAP → fusion → graph analytics) and a LangGraph-based AI agent that generates natural-language compliance narrative reports.
 
+---
 
+## 1. Project Overview
 
-## ✅ Completed Work
+Money laundering investigations start with raw transaction data and end with a compliance decision. This system automates the intermediate analytics and narrative generation steps:
 
-### Phase 0 — Environment & Setup ✅
+1. **Ingest & validate** a raw transaction CSV.
+2. **Engineer 17 behavioral features** (velocity, spikes, currency/bank indicators, network metrics) per transaction.
+3. **Score** transactions via two lenses: deterministic **rules** and a trained **XGBoost classifier**, explained per-feature using **SHAP**.
+4. **Fuse** both risk signals into a combined score and compliance action decision (Clear, Monitor, Investigate, Escalate).
+5. **Analyze the transaction network** as a graph to surface hub accounts, suspected mule accounts, and cycles.
+6. **Hand the evidence to the LangGraph Agent** which orchestrates the intent parsing, planning, execution check, and calls the Gemini LLM to write a plain-English compliance narrative.
+7. **Display results** on a responsive HTML5 dashboard.
 
-- **Python 3.13 virtual environment** created and all dependencies installed
-  - Used Python 3.13 (not 3.14) because `pydantic-core` PyO3 bindings don't yet support 3.14
-- **`requirements.txt`** with pinned versions for all 14 core dependencies:
-  - `fastapi`, `uvicorn[standard]`, `pydantic`, `pydantic-settings`
-  - `langgraph`, `langchain-core`, `huggingface_hub`
-  - `python-dotenv`, `dateparser`, `python-multipart`
-  - `httpx`, `pytest`, `pytest-asyncio`
-- **`.env` + `.env.example`** — Gemini API key, model config, app settings
-- **`.gitignore`** — venv, env files, pycache, IDE, OS artifacts
-- **`verify_ai.py`** — standalone Google AI connectivity test with clear error messages
-- **Google AI verified** — gemma-4-31b-it confirmed live and responding
-- **Full directory skeleton** created with all `__init__.py` files across 6 subpackages
+---
 
-### Phase 1 — Backend Infrastructure ✅
+## 2. System Architecture
 
-- **`app/config/settings.py`** — Centralized configuration via `pydantic-settings`:
-  - HF token & model, tool timeout, environment, log level
-  - CORS origins for React dev servers (`localhost:5173`, `localhost:3000`)
-  - `use_dummy_analytics` feature flag for Phase 12 swap
-- **`app/core/logging.py`** — Dual-mode structured logging:
-  - **Dev:** Colored, human-readable console output with timestamps
-  - **Prod:** JSON-formatted log lines with structured fields (`query`, `tool`, `duration_ms`, `node`)
-  - Silences noisy third-party loggers (httpx, httpcore, uvicorn.access, huggingface_hub)
-- **`app/core/exceptions.py`** — Three-tier exception hierarchy + FastAPI handlers:
-  - `AMLensError` (base) → `ToolExecutionError`, `IntentParsingError`, `WorkflowError`
-  - All errors return structured JSON: `{error, message, detail}`
-  - Catch-all handler prevents raw 500 responses — every failure is clean
-- **`app/main.py`** — FastAPI application factory:
-  - CORS middleware configured for React frontend
-  - Lifespan events with structured startup/shutdown logging
-  - Exception handlers registered globally
-  - Stub endpoints: `GET /health` and `GET /status`
-
-### Phase 2 — Shared State Schema ✅
-
-- **`app/agents/state.py`** — Core shared state for the LangGraph workflow:
-  - `AgentState(BaseModel)` with 11 fields: `user_query`, `filters`, `parsed_intent`, `entities`, `execution_plan`, `tool_outputs`, `risk_results`, `explanation`, `recommendation`, `trace`, `errors`
-  - `AgentStateDict(TypedDict)` adapter for LangGraph compatibility
-  - Round-trip conversion helpers: `state_to_dict()` / `dict_to_state()`
-- **`app/schemas/tool_io.py`** — Integration contract with Member 2 (5 output models):
-  - `EDAOutput`, `FeatureOutput`, `RuleOutput`, `AnomalyOutput`, `RiskOutput`
-  - Range validation on scores (`0.0–1.0`), `Literal` type on `risk_band`
-- **`app/schemas/requests.py`** — API request/response models:
-  - `QueryRequest` (validated: min 1 char, max 2000 chars)
-  - `QueryResponse` (mirrors AgentState, explanation + recommendation prioritized)
-  - `UploadRequest/Response` stubs, `HealthResponse`, `StatusResponse`
-- **`app/tools/tool_interfaces.py`** — Protocol classes for the 5 analytics functions (structural subtyping — Member 2 doesn't need to inherit anything)
-
-### Phase 3 — Dummy Analytics API ✅
-
-- **`app/tools/dummy_analytics.py`** — realistic stand-in for Member 2's 5 analytics functions:
-  - `run_eda()` — EDA summary with varied country pools and transaction volumes
-  - `generate_features()` — AML features (velocity, dormancy, cash ratio, cross-border %)
-  - `detect_rules()` — rule-based detection across 8 AML patterns with detailed hit info
-  - `detect_anomalies()` — ML anomaly scores with top anomalous account lists
-  - `calculate_risk()` — composite scoring (40% rules + 60% ML) with contributing factors
-- **Design features:**
-  - Deterministic seeding from filters → same query always produces same results (reproducible demos)
-  - Varied, believable data: different risk bands, country sets, pattern combinations
-  - Edge cases covered: empty rules, borderline scores, max risk scenarios
-  - All outputs validate against `app/schemas/tool_io.py` Pydantic models
-
-### Phase 4 — Intent Parsing Agent ✅
-
-- **`app/agents/intent_parser.py`** — hybrid intent parser combining rule-based & LLM extraction:
-  - **Rule-based extraction**: High-precision extraction of dates, amounts ($, ₹), customer IDs (`CUST-xxx`), and country codes using `dateparser` and regex heuristics.
-  - **LLM extraction**: Google AI Studio (`gemma-4-31b-it`) for fuzzy fields: `intent` label, `aml_pattern`, `transaction_type`, and `threshold_amount`.
-  - **Merger & Error Handling**: Merges both outputs (rule-based injected into `_entities`). Includes robust `try/except` wrapping to gracefully degrade to `{"intent": "unknown"}` if the LLM fails, times out, or returns malformed JSON.
-  - Fully tested against 8 varied queries and 1 intentional JSON malformation fallback scenario.
-
-### Phase 5 — Execution Planner ✅
-
-- **`app/agents/planner.py`** — deterministic, rule-based planner mapping parsed intents to an ordered list of analytics tools:
-  - `"summarize"` / `"investigate"` → includes `run_eda`
-  - `"detect_pattern"` or explicit `aml_pattern` → includes `generate_features`, `detect_rules`
-  - `"score_risk"` → includes `detect_anomalies`, `calculate_risk`
-  - `"unknown"` fallback → defaults to `['run_eda', 'detect_rules', 'calculate_risk']`
-  - Automatically de-duplicates the selected tools and strictly enforces execution order based on data dependencies.
-
-### Phase 6 — Tool Integration Layer ✅
-
-- **`app/tools/tool_manager.py`** — centralized dispatcher for executing analytics tools:
-  - **Tool Registry**: Dictionary mapping string names from the planner to callable Python functions.
-  - **Safe Execution**: Uses `ThreadPoolExecutor` to run tools asynchronously.
-  - **Timeout Enforcement**: Enforces `TOOL_TIMEOUT_SECONDS` (15s default). If a tool hangs, the agent moves on gracefully with an error in the state, preventing full pipeline lockup.
-  - **Error Isolation**: Catches all exceptions and normalizes them into `{"error": str(e)}` dicts so the LangGraph state remains stable.
-
-### Phase 7 — LangGraph Workflow ✅
-
-- **`app/agents/workflow.py`** — complete directed graph stitching all agents and tools together:
-  - **Nodes**: `intent` → `plan` → `execute` → `explain` (stubbed) → `recommend` (stubbed).
-  - **State Management**: Uses `AgentStateDict` to flow data through the pipeline, updating `parsed_intent`, `execution_plan`, `tool_outputs`, `risk_results`, and `trace`.
-  - **Execution**: `workflow.invoke()` runs the entire pipeline synchronously and successfully returns the populated state dictionary.
-
-### Phase 8 — Explanation Agent ✅
-
-- **`app/agents/explainer.py`** — converts raw tool outputs into plain-language text:
-  - **Prompt Engineering**: Instructs Gemma 4 (31b) to act as a senior AML compliance analyst writing a 3-4 sentence narrative.
-  - **Integration**: Replaced the stub in `workflow.py` with the actual LLM call.
-  - **Fallback**: Wraps the call in a `try/except` block to return a graceful fallback string if the LLM is unreachable, protecting the pipeline.
-
-### Phase 9 — Recommendation Agent ✅
-
-- **`app/agents/recommender.py`** — deterministic, auditable risk recommendation:
-  - Takes the `risk_band` computed by the analytics tools and translates it directly into an actionable step (e.g. `Critical` → "Escalate immediately and file a report.").
-  - Hooked directly into the final stage of `workflow.py`.
-
-### Phase 10 — API Layer ✅
-
-- **`app/api/routes.py`** — wraps the orchestration graph into a robust REST API:
-  - `POST /query`: Processes natural language, executes the graph, and returns the full JSON state including narrative.
-  - `GET /health` and `GET /status`: Liveness and readiness probes.
-  - **Validation**: Strict Pydantic models validate all incoming requests, correctly returning HTTP 422 if an input is malformed, ensuring the LLM parser is never fed junk data.
-  - Hooked into `app/main.py`.
-
-### Phase 11 — End-to-End Testing ✅
-
-- **`tests/test_phase11.py`** — automated suite blasting 8 varied AML queries through the live API endpoint.
-- Validated that intent parsing, tool orchestration, risk computation, narrative generation, and recommendations flow perfectly together.
-- Total processing time is robust, gracefully handling network latencies to the Google GenAI backend. 
-- **The backend agent layer is 100% complete and ready for the real tool integration (Phase 12) and Frontend (Phase 13)!**
-
-## 🚀 Quick Start
-
-```bash
-# 1. Navigate to backend
-cd backend
-
-# 2. Create venv with Python 3.13
-py -3.13 -m venv venv
-
-# 3. Activate venv
-.\venv\Scripts\activate
-
-# 4. Install dependencies
-pip install -r requirements.txt
-
-# 5. Configure environment
-cp .env.example .env
-# Edit .env with your Google AI Studio API key
-
-# 6. Verify Google AI Studio connectivity
-python verify_ai.py
-
-# 7. Start the server
-uvicorn app.main:app --reload --port 8000
-
-# 8. Check health
-curl http://localhost:8000/health
+```
+                                  AMLens/
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │  CSV Ingestion ──▶ [DataLoader] ──▶ [Validator] ──▶ [Preprocessor]      │
+  │                                                            │           │
+  │                                                            ▼           │
+  │                                                    [FeatureEngineer]   │
+  │                                                      /          \      │
+  │                                                     ▼            ▼     │
+  │                                              [RuleEngine]   [AMLInference]
+  │                                                     \            /     │
+  │                                                      ▼          ▼      │
+  │                                                      [RiskFusion]      │
+  │                                                            │           │
+  │                                                            ▼           │
+  │                                                     [GraphAnalyzer]    │
+  └────────────────────────────────────────────────────────────┬───────────┘
+                                                               ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │                          LangGraph Agent Layer                         │
+  │                                                                        │
+  │   [workflow.invoke] ──▶ [Intent] ──▶ [Plan] ──▶ [Execute]              │
+  │                                                     │                  │
+  │                                                     ▼                  │
+  │   [Narrative Report] ◀── [Recommender] ◀── [EvidenceExplainer (Gemini)]│
+  └────────────────────────────────────────────────────────────┬───────────┘
+                                                               ▼
+                                             Frontend Dashboard (/ui)
 ```
 
-## 🔑 Environment Variables
+The system is fully consolidated inside the `AMLens/` workspace:
+* **`analytics/`** — Python SDK handles the core ingestion, processing, feature engineering, rules, ML inference, and network analytics.
+* **`backend/`** — FastAPI application hosting the backend service, routes, database/API models, and the LangGraph agent orchestrating narration.
+* **`models/`** — Trained XGBoost ML pipeline and estimators.
+* **`static/`** — Minimal HTML5/JS dashboard.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GEMINI_API_KEY` | ✅ | — | Google AI Studio API key |
-| `GEMINI_MODEL` | ❌ | `gemma-4-31b-it` | Model for intent parsing + explanation |
-| `ENV` | ❌ | `dev` | Environment (`dev` / `staging` / `prod`) |
-| `LOG_LEVEL` | ❌ | `INFO` | Logging level |
-| `TOOL_TIMEOUT_SECONDS` | ❌ | `15` | Max wait per analytics tool call |
+---
 
-## 🛠️ Tech Stack
+## 3. Folder Structure
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **API Framework** | FastAPI 0.115 | REST API with auto-generated Swagger docs |
-| **LLM** | Google AI Studio (genai SDK) | Intent parsing + explanation generation |
-| **Model** | gemma-4-31b-it | Instruction-tuned chat model |
-| **Orchestration** | LangGraph 0.4 | Explicit state graph with named nodes |
-| **Validation** | Pydantic 2.11 | Schema enforcement at every boundary |
-| **Config** | pydantic-settings | Type-safe env var loading |
-| **Frontend** | React + Vite | Query UI + results dashboard (Phase 13) |
-| **Python** | 3.13 | Latest stable (3.14 incompatible with pydantic-core) |
+```
+AMLens/
+├── analytics/                  # Core analytics SDK subpackage
+│   ├── config.py                #   Paths and config settings
+│   ├── interfaces.py            #   Shared dataclasses (RuleResult, RiskAssessment, ...)
+│   ├── data/                    #   Loader, Validator, Preprocessor
+│   ├── features/                #   FeatureEngineer (17 engineered features)
+│   ├── rules/                   #   RuleEngine + 11 point-based rules
+│   ├── ml/                      #   AMLInference (XGBoost + SHAP local explanations)
+│   ├── fusion/                  #   RiskFusion (combines rules & ML signals)
+│   └── graph/                   #   GraphAnalyzer (NetworkX component, cycle, hub, mule metrics)
+├── backend/                    # FastAPI web server & Agent layer
+│   ├── app/
+│   │   ├── main.py              #   FastAPI application setup & Static UI mount
+│   │   ├── api/routes.py        #   API Router (/health, /status, /investigate, /upload)
+│   │   ├── services/            #   investigation_service.py (runs analytics & invokes LangGraph)
+│   │   ├── schemas/             #   Pydantic validation schemas (evidence.py, requests.py)
+│   │   └── agents/              #   LangGraph agent workflow definitions
+│   │       ├── workflow.py      #     Pregel orchestration graph (intent -> plan -> execute -> explain -> recommend)
+│   │       ├── state.py         #     State TypedDict and conversion helpers
+│   │       ├── intent_parser.py #     Intent parser (Regex + Gemini query intent classifier)
+│   │       ├── planner.py       #     Static planner mapping intents to execution steps
+│   │       ├── recommender.py   #     Deterministic compliance action mapper
+│   │       └── evidence_explainer.py # LLM explainer translating metrics into plain text
+│   ├── static/                  # Minimal UI dashboard
+│   │   └── index.html           #   Upload interface & results viewer
+│   └── requirements.txt         # Pinned backend and analytics dependencies
+├── models/                      # XGBoost trained pipeline joblib files
+├── test.py                      # Standalone pipeline validation script (no web server needed)
+└── README.md                    # This documentation file
+```
+
+---
+
+## 4. Running the Project
+
+All setup and execution are handled inside the `AMLens` python environment.
+
+### 4.1 Prerequisites
+* Python 3.12 (standard stable release)
+* A Google AI Studio API Key (for Gemini narrative generation)
+
+### 4.2 Setup
+1. Open your terminal in the `AMLens` folder (or navigate into it):
+   ```bash
+   cd AMLens
+   ```
+2. Create and activate a Python virtual environment:
+   ```bash
+   # Windows PowerShell
+   python -m venv .venv
+   .venv\Scripts\activate
+   
+   # Linux/macOS
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+3. Install all dependencies:
+   ```bash
+   pip install -r backend/requirements.txt
+   ```
+4. Configure your environment keys:
+   * Copy the example environment template:
+     ```bash
+     cp backend/.env.example backend/.env
+     ```
+   * Open `backend/.env` and update the `GEMINI_API_KEY` with your Google AI Studio API key:
+     ```env
+     GEMINI_API_KEY=your_gemini_api_key_here
+     ```
+
+### 4.3 Running the Analytics Verification
+To run a standalone check of the analytics pipeline (Loader → Validator → Preprocessor → FeatureEngineer → RuleEngine → ML → Fusion → Graph) without booting the web server:
+```bash
+python test.py
+```
+This processes `../dataset/sample.csv` and prints the structured evidence output of each step.
+
+### 4.4 Running the Web Application
+1. Start the FastAPI backend server:
+   ```bash
+   cd backend
+   python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+   ```
+2. Open your browser and navigate to the dashboard UI:
+   ```
+   http://127.0.0.1:8000/ui/
+   ```
+3. Select a transaction dataset CSV (e.g., `dataset/sample.csv` or `dataset/mixed_aml_dataset.csv` from the root directory) and click **"Run Investigation"** to process the data and view the final AI narrative report.
