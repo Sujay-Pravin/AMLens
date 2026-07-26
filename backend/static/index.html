@@ -23,6 +23,8 @@
   .report { white-space: pre-wrap; line-height: 1.5; }
   #status { color: #666; margin-left: 0.5rem; }
   .error { color: #a10c0c; }
+  .trace-yes { color: #1a7431; font-weight: 600; }
+  .trace-no { color: #999; }
 </style>
 </head>
 <body>
@@ -32,6 +34,7 @@
 
 <div class="upload-bar">
   <input type="file" id="fileInput" accept=".csv">
+  <input type="text" id="queryInput" placeholder='e.g. "Find structuring patterns in the last 30 days" or "Is customer 4521 suspicious?"' style="flex: 1; padding: 0.5rem;">
   <button id="runBtn">Run Investigation</button>
   <span id="status"></span>
 </div>
@@ -40,6 +43,7 @@
 
 <script>
 const fileInput = document.getElementById('fileInput');
+const queryInput = document.getElementById('queryInput');
 const runBtn = document.getElementById('runBtn');
 const statusEl = document.getElementById('status');
 const results = document.getElementById('results');
@@ -59,61 +63,73 @@ function renderTable(rows, columns) {
   return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+const TOOL_LABELS = {
+  validation: 'Validation',
+  eda: 'EDA',
+  rules: 'Rule Engine',
+  ml: 'ML',
+  fusion: 'Risk Fusion',
+  graph: 'Graph',
+};
+
+function renderTrace(trace) {
+  return Object.entries(trace || {}).map(([tool, ran]) => {
+    const mark = ran ? '✓' : '✗';
+    const cls = ran ? 'trace-yes' : 'trace-no';
+    return `<span class="${cls}">${mark} ${TOOL_LABELS[tool] || tool}</span>`;
+  }).join('&nbsp;&nbsp;');
+}
+
 function render(data) {
+  const topTxRows = (data.top_transactions || []).map(t => ({
+    ...t,
+    risk_score: t.risk_score.toFixed(3),
+    fraud_probability: (t.fraud_probability * 100).toFixed(2) + '%',
+    triggered_rules: t.triggered_rules.join(', ') || 'none',
+  }));
+
   results.innerHTML = `
     <div class="card">
-      <h2>Validation Summary</h2>
+      <h2>Query</h2>
       <p><b>File:</b> ${data.filename}</p>
+      <p><b>Query:</b> ${data.query || '<em>none</em>'}</p>
+      <p><b>Parsed intent:</b> ${data.parsed_intent.intent || 'unknown'} ${data.parsed_intent.aml_pattern ? '(' + data.parsed_intent.aml_pattern + ')' : ''}</p>
+      <p><b>Filters applied:</b> ${Object.keys(data.filters_applied).length ? JSON.stringify(data.filters_applied) : 'none'}</p>
+    </div>
+
+    <div class="card">
+      <h2>Execution Plan</h2>
+      <p>${renderTrace(data.execution_trace)}</p>
+    </div>
+
+    <div class="card">
+      <h2>Validation Summary</h2>
       <p><b>Rows:</b> ${data.validation.total_rows} &nbsp; <b>Columns:</b> ${data.validation.total_columns} &nbsp;
          <b>Duplicates removed:</b> ${data.validation.duplicate_rows}</p>
       <p><b>Missing columns:</b> ${data.validation.missing_columns.length ? data.validation.missing_columns.join(', ') : 'none'}</p>
     </div>
 
+    ${data.eda ? `
     <div class="card">
-      <h2>Highest-Risk Transaction</h2>
-      <p>Row #${data.top_transaction.row_index}: ${data.top_transaction.sender_entity_id} &rarr; ${data.top_transaction.receiver_entity_id},
-         amount ${data.top_transaction.amount_paid.toFixed(2)} &mdash; ${badge(data.top_transaction.risk_level)}</p>
-    </div>
+      <h2>EDA Summary</h2>
+      <p><b>Rows analyzed:</b> ${data.eda.summary.rows} &nbsp; <b>Columns:</b> ${data.eda.summary.columns}</p>
+      <p><b>Class distribution (is_laundering):</b> ${JSON.stringify(data.eda.class_distribution)}</p>
+    </div>` : ''}
 
+    ${data.top_transactions && data.top_transactions.length ? `
     <div class="card">
-      <h2>Rule Engine Findings</h2>
-      <p><b>Rule risk score:</b> ${data.rules.risk_score}</p>
-      <p><b>Triggered rules:</b> ${renderList(data.rules.triggered_rules)}</p>
-      <p><b>Explanations:</b> ${renderList(data.rules.explanations)}</p>
-    </div>
+      <h2>Top Suspicious Transactions (${data.top_transactions.length})</h2>
+      ${renderTable(topTxRows, ['row_index', 'sender_entity_id', 'receiver_entity_id', 'amount_paid', 'risk_level', 'risk_score', 'fraud_probability', 'triggered_rules', 'explanation'])}
+    </div>` : ''}
 
-    <div class="card">
-      <h2>ML Prediction</h2>
-      <p><b>Prediction:</b> ${data.ml.prediction ? 'Suspicious (1)' : 'Not suspicious (0)'} &nbsp;
-         <b>Fraud probability:</b> ${(data.ml.probability * 100).toFixed(2)}%</p>
-      <h3>Top SHAP Features (increasing risk)</h3>
-      ${renderTable(data.ml.top_positive_features, ['feature', 'value', 'impact'])}
-      <h3>Top SHAP Features (decreasing risk)</h3>
-      ${renderTable(data.ml.top_negative_features, ['feature', 'value', 'impact'])}
-    </div>
-
-    <div class="card">
-      <h2>Risk Assessment</h2>
-      <p><b>Final score:</b> ${data.risk.final_score.toFixed(4)} &nbsp; ${badge(data.risk.risk_level)}</p>
-      <p><b>Decision:</b> ${data.risk.decision}</p>
-      <p><b>Reasons:</b> ${renderList(data.risk.reasons)}</p>
-    </div>
-
+    ${data.graph ? `
     <div class="card">
       <h2>Graph Metrics</h2>
       <p><b>Accounts:</b> ${data.graph.node_count} &nbsp; <b>Transfers:</b> ${data.graph.edge_count} &nbsp;
          <b>Connected clusters:</b> ${data.graph.num_components} &nbsp; <b>Cycles found:</b> ${data.graph.cycles.length}</p>
       <p><b>Hub accounts:</b> ${renderList(data.graph.hub_accounts)}</p>
       <p><b>Suspected mule accounts:</b> ${renderList(data.graph.mule_accounts)}</p>
-    </div>
-
-    <div class="card">
-      <h2>All Scored Transactions (${data.transactions.length})</h2>
-      ${renderTable(
-        data.transactions.map(t => ({...t, final_score: t.final_score.toFixed(3)})),
-        ['row_index', 'sender_entity_id', 'receiver_entity_id', 'amount_paid', 'final_score', 'risk_level']
-      )}
-    </div>
+    </div>` : ''}
 
     <div class="card">
       <h2>Final AI Investigation Report</h2>
@@ -138,6 +154,7 @@ runBtn.addEventListener('click', async () => {
 
   const formData = new FormData();
   formData.append('file', file);
+  formData.append('query', queryInput.value.trim());
 
   try {
     const res = await fetch('/investigate', { method: 'POST', body: formData });

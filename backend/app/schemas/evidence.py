@@ -9,7 +9,7 @@ entry point for AMLens.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -73,14 +73,41 @@ class TransactionRiskSummary(BaseModel):
     risk_level: str
 
 
+class TopTransactionOut(BaseModel):
+    row_index: int
+    sender_entity_id: str
+    receiver_entity_id: str
+    amount_paid: float
+    risk_level: str
+    risk_score: float
+    fraud_probability: float
+    triggered_rules: List[str]
+    shap_top_contributors: List[FeatureContributionOut]
+    explanation: str
+
+
+class EDASummaryOut(BaseModel):
+    summary: dict[str, Any]
+    missing_values: dict[str, int]
+    class_distribution: dict[str, int]
+    metrics: dict[str, Any]
+
+
 class InvestigationResponse(BaseModel):
     filename: str
+    query: str
+    parsed_intent: dict[str, Any]
+    filters_applied: dict[str, Any]
+    execution_plan: List[str]
+    execution_trace: dict[str, bool]
     validation: ValidationReportOut
-    top_transaction: TransactionRiskSummary
-    rules: RuleResultOut
-    ml: MLResultOut
-    risk: RiskAssessmentOut
-    graph: GraphMetricsOut
-    transactions: List[TransactionRiskSummary]
+    eda: Optional[EDASummaryOut] = None
+    top_transaction: Optional[TransactionRiskSummary] = None
+    rules: Optional[RuleResultOut] = None
+    ml: Optional[MLResultOut] = None
+    risk: Optional[RiskAssessmentOut] = None
+    graph: Optional[GraphMetricsOut] = None
+    transactions: List[TransactionRiskSummary] = Field(default_factory=list)
+    top_transactions: List[TopTransactionOut] = Field(default_factory=list)
     investigation_report: str
     recommendation: str

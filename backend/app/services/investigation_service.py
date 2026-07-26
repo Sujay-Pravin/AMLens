@@ -4,18 +4,21 @@ the resulting evidence to the LangGraph agent for reasoning, for the
 POST /investigate endpoint.
 
 It imports the `analytics` package directly from the parent repo (a
-separate, locked pipeline), runs it exactly once per request, and converts
-its dataclass outputs into the Pydantic response models in
-app/schemas/evidence.py. The LangGraph workflow (app/agents/workflow.py)
-then reasons over that evidence to produce the investigation narrative and
-recommendation — it does not recompute fraud detection itself.
+separate, locked pipeline), runs validation + feature engineering exactly
+once per request (the prerequisites every query needs), then hands the
+engineered dataframe to the LangGraph workflow — which filters it by the
+parsed query entities and conditionally runs the remaining analytics tools
+(EDA, rule engine, ML inference, risk fusion, graph analytics) strictly
+according to the planner's execution_plan. The LangGraph workflow
+(app/agents/workflow.py) reasons over that evidence to produce the
+investigation narrative and recommendation — it does not recompute fraud
+detection itself.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import sys
-from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -37,10 +40,6 @@ if str(_REPO_ROOT) not in sys.path:
 from analytics.data.validator import DataValidator
 from analytics.data.preprocess import DataPreprocessor
 from analytics.features.engineer import FeatureEngineer
-from analytics.rules.engine import RuleEngine
-from analytics.ml.inference import AMLInference
-from analytics.fusion.engine import RiskFusion
-from analytics.graph.engine import GraphAnalyzer
 
 from app.agents.workflow import workflow
 from app.core.logging import get_logger
@@ -50,19 +49,14 @@ from app.schemas.evidence import (
     MLResultOut,
     RiskAssessmentOut,
     GraphMetricsOut,
+    EDASummaryOut,
     TransactionRiskSummary,
+    TopTransactionOut,
+    FeatureContributionOut,
     InvestigationResponse,
 )
 
 logger = get_logger(__name__)
-
-MAX_ROWS = 500
-
-
-@lru_cache(maxsize=1)
-def _get_ml_engine() -> AMLInference:
-    """Load the model + build the SHAP explainer once and reuse across requests."""
-    return AMLInference()
 
 
 def _validation_out(validation) -> ValidationReportOut:
@@ -98,6 +92,15 @@ def _graph_out(graph_metrics) -> GraphMetricsOut:
     )
 
 
+def _eda_out(eda_result) -> EDASummaryOut:
+    return EDASummaryOut(
+        summary=eda_result.summary,
+        missing_values={str(k): int(v) for k, v in eda_result.missing_values.items()},
+        class_distribution={str(k): int(v) for k, v in eda_result.class_distribution.items()},
+        metrics=eda_result.metrics,
+    )
+
+
 def _transaction_summary(index, row, risk) -> TransactionRiskSummary:
     return TransactionRiskSummary(
         row_index=int(index),
@@ -109,12 +112,31 @@ def _transaction_summary(index, row, risk) -> TransactionRiskSummary:
     )
 
 
+def _top_transaction_out(index, row, rule_result, ml_result, risk, explanation) -> TopTransactionOut:
+    return TopTransactionOut(
+        row_index=int(index),
+        sender_entity_id=str(row["sender_entity_id"]),
+        receiver_entity_id=str(row["receiver_entity_id"]),
+        amount_paid=float(row["amount_paid"]),
+        risk_level=risk.risk_level,
+        risk_score=risk.final_score,
+        fraud_probability=ml_result.probability,
+        triggered_rules=rule_result.triggered_rules,
+        shap_top_contributors=[
+            FeatureContributionOut(feature=fc.feature, value=fc.value, impact=fc.impact)
+            for fc in ml_result.top_positive_features
+        ],
+        explanation=explanation,
+    )
+
+
 def run_investigation(
-    df: pd.DataFrame, filename: str, max_rows: int = MAX_ROWS
+    df: pd.DataFrame, filename: str, query: str
 ) -> InvestigationResponse:
-    """Run the full analytics pipeline on an uploaded transaction CSV and
-    return the evidence + LLM-generated investigation narrative for the
-    single highest-risk transaction, alongside dataset-wide graph metrics.
+    """Run validation + feature engineering (always required), then invoke
+    the query-driven LangGraph workflow, which filters the dataset by the
+    parsed query entities and conditionally runs EDA/rules/ML/fusion/graph
+    per the planner's execution_plan.
     """
 
     validation = DataValidator.validate(df)
@@ -130,54 +152,55 @@ def run_investigation(
     if len(features) == 0:
         raise ValueError("Uploaded CSV contains no rows after preprocessing.")
 
-    subset = features.iloc[:max_rows]
-    ml_engine = _get_ml_engine()
-
-    logger.info(f"[Investigation] Scoring {len(subset)} transaction(s) from '{filename}'.")
-
-    evaluated = []
-    for i in range(len(subset)):
-        row = subset.iloc[i]
-        rule_result = RuleEngine.evaluate_transaction(row)
-        ml_result = ml_engine.predict(subset.iloc[[i]])
-        risk = RiskFusion.fuse(rule_result, ml_result)
-        evaluated.append((subset.index[i], row, rule_result, ml_result, risk))
-
-    best_index, best_row, best_rule, best_ml, best_risk = max(
-        evaluated, key=lambda e: e[4].final_score
-    )
-
-    graph_metrics = GraphAnalyzer.analyze(features)
+    logger.info(f"[Investigation] Query: '{query}' over '{filename}' ({len(features)} rows).")
 
     initial_state = {
-        "user_query": f"Investigate the highest-risk transaction in '{filename}'.",
+        "user_query": query,
         "filters": {},
+        "features_df": features,
         "validation": validation,
-        "rule_result": best_rule,
-        "ml_result": best_ml,
-        "risk_assessment": best_risk,
-        "graph_metrics": graph_metrics,
     }
     final_state = workflow.invoke(initial_state)
     if final_state.get("errors"):
         logger.warning(f"[Investigation] Agent reported errors: {final_state['errors']}")
 
+    evaluated_transactions = final_state.get("evaluated_transactions") or []
+    risk_assessment = final_state.get("risk_assessment")
+    rule_result = final_state.get("rule_result")
+    ml_result = final_state.get("ml_result")
+    graph_metrics = final_state.get("graph_metrics")
+    eda_result = final_state.get("eda_result")
+
     narrative = final_state.get("explanation") or ""
-    recommendation = final_state.get("recommendation") or best_risk.decision
+    recommendation = final_state.get("recommendation") or (
+        risk_assessment.decision if risk_assessment else "No risk scoring performed for this query."
+    )
 
     transactions = [
-        _transaction_summary(index, row, risk) for index, row, _, _, risk in evaluated
+        _transaction_summary(index, row, risk)
+        for index, row, _, _, risk, _ in evaluated_transactions
+    ]
+    top_transactions = [
+        _top_transaction_out(index, row, rr, mr, risk, explanation)
+        for index, row, rr, mr, risk, explanation in evaluated_transactions
     ]
 
     return InvestigationResponse(
         filename=filename,
+        query=query,
+        parsed_intent=final_state.get("parsed_intent") or {},
+        filters_applied=final_state.get("filters") or {},
+        execution_plan=final_state.get("execution_plan") or [],
+        execution_trace=final_state.get("execution_trace") or {},
         validation=_validation_out(validation),
-        top_transaction=_transaction_summary(best_index, best_row, best_risk),
-        rules=_rule_out(best_rule),
-        ml=_ml_out(best_ml),
-        risk=_risk_out(best_risk),
-        graph=_graph_out(graph_metrics),
+        eda=_eda_out(eda_result) if eda_result else None,
+        top_transaction=transactions[0] if transactions else None,
+        rules=_rule_out(rule_result) if rule_result else None,
+        ml=_ml_out(ml_result) if ml_result else None,
+        risk=_risk_out(risk_assessment) if risk_assessment else None,
+        graph=_graph_out(graph_metrics) if graph_metrics else None,
         transactions=transactions,
+        top_transactions=top_transactions,
         investigation_report=narrative,
         recommendation=recommendation,
     )

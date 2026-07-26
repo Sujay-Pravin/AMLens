@@ -19,47 +19,69 @@ client = genai.Client(api_key=settings.gemini_api_key)
 
 PROMPT_TEMPLATE = """You are a senior AML (Anti-Money Laundering) compliance analyst.
 You are given evidence that has ALREADY been computed by an automated analytics
-pipeline (data validation, rule engine, ML model with SHAP explainability, a
-fused risk score, and transaction network graph metrics) for one transaction
-flagged as the highest risk in an uploaded dataset.
+pipeline, gated to only the tools relevant to the user's query (data
+validation, and where applicable: exploratory data analysis, rule engine,
+ML model with SHAP explainability, a fused risk score for the riskiest
+transactions, and transaction network graph metrics).
 
-Write a concise, professional 4-6 sentence investigation narrative explaining
-WHY this transaction is risky, grounded strictly in the evidence below.
-Do NOT invent numbers or recompute a risk score — only explain what the
-evidence already shows. Do NOT output JSON. Write in plain, professional
-English suitable for a compliance case file.
+Write a concise, professional investigation report (5-8 sentences) summarizing
+the overall findings, referencing the highest-risk transactions, graph
+findings, and EDA findings ONLY if that evidence is present below, and closing
+with a recommendation. Do NOT invent numbers or recompute anything — only
+explain what the evidence already shows. Do NOT output JSON. Write in plain,
+professional English suitable for a compliance case file.
+
+User query: {user_query}
+Tools executed this run: {tools_executed}
 
 Dataset Validation:
 - Rows: {total_rows}, Columns: {total_columns}
 - Duplicate rows removed: {duplicate_rows}
 - Missing columns: {missing_columns}
 
-Rule Engine Findings:
-- Triggered rules: {triggered_rules}
-- Rule risk score: {rule_score}
-- Explanations: {rule_explanations}
-
-ML Model Prediction:
-- Fraud probability: {ml_probability:.4f}
-- Prediction label: {ml_prediction}
-- Top features increasing risk: {ml_top_positive}
-- Top features decreasing risk: {ml_top_negative}
-
-Fused Risk Assessment:
-- Final score: {final_score:.4f}
-- Risk level: {risk_level}
-- Decision: {decision}
-- Reasons: {reasons}
-
-Transaction Network Graph:
-- Accounts: {node_count}, Transfers: {edge_count}, Connected clusters: {num_components}
-- Hub accounts (unusually high connectivity): {hub_accounts}
-- Suspected mule accounts (pass-through in/out patterns): {mule_accounts}
-- Cycles detected (possible round-tripping): {cycle_count}
+{eda_section}
+{transactions_section}
+{graph_section}
 """
 
 
-def _fallback_report(validation, rule_result, ml_result, risk, graph_metrics) -> str:
+def _eda_section(eda_result) -> str:
+    if eda_result is None:
+        return "Exploratory Data Analysis: not run for this query.\n"
+    return (
+        "Exploratory Data Analysis:\n"
+        f"- Dataset shape analyzed: {eda_result.summary.get('rows')} rows, "
+        f"{eda_result.summary.get('columns')} columns\n"
+        f"- Class distribution (is_laundering): {eda_result.class_distribution}\n"
+        f"- Top sender banks: {list(eda_result.metrics.get('top_sender_banks', {}).keys())[:5]}\n"
+    )
+
+
+def _transactions_section(evaluated_transactions) -> str:
+    if not evaluated_transactions:
+        return "Highest-Risk Transactions: rule/ML scoring not run for this query.\n"
+    lines = ["Highest-Risk Transactions (top {}):".format(len(evaluated_transactions))]
+    for index, row, rule_result, ml_result, risk, explanation in evaluated_transactions:
+        lines.append(
+            f"- Row #{index}: final score {risk.final_score:.2f} ({risk.risk_level}). {explanation}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _graph_section(graph_metrics) -> str:
+    if graph_metrics is None:
+        return "Transaction Network Graph: not run for this query.\n"
+    return (
+        "Transaction Network Graph:\n"
+        f"- Accounts: {graph_metrics.node_count}, Transfers: {graph_metrics.edge_count}, "
+        f"Connected clusters: {graph_metrics.num_components}\n"
+        f"- Hub accounts (unusually high connectivity): {graph_metrics.hub_accounts or 'none'}\n"
+        f"- Suspected mule accounts (pass-through in/out patterns): {graph_metrics.mule_accounts or 'none'}\n"
+        f"- Cycles detected (possible round-tripping): {len(graph_metrics.cycles)}\n"
+    )
+
+
+def _fallback_report(validation, evaluated_transactions, eda_result, graph_metrics, risk_assessment) -> str:
     """Deterministic narrative used when the LLM call fails (e.g. no API key)."""
 
     parts = [
@@ -68,29 +90,25 @@ def _fallback_report(validation, rule_result, ml_result, risk, graph_metrics) ->
         "duplicate rows removed).",
     ]
 
-    if rule_result.triggered_rules:
+    if evaluated_transactions:
+        best = evaluated_transactions[0]
+        best_risk = best[4]
         parts.append(
-            "The rule engine triggered "
-            f"{len(rule_result.triggered_rules)} rule(s) "
-            f"({', '.join(rule_result.triggered_rules)}), contributing a rule "
-            f"risk score of {rule_result.risk_score}."
+            f"{len(evaluated_transactions)} transaction(s) were scored; the "
+            f"highest-risk transaction (row #{best[0]}) reached a final score of "
+            f"{best_risk.final_score:.2f} ({best_risk.risk_level} risk). {best[5]}"
         )
     else:
-        parts.append("The rule engine triggered no rules for this transaction.")
+        parts.append("Rule/ML risk scoring was not requested for this query.")
 
-    parts.append(
-        f"The ML model estimated a fraud probability of "
-        f"{ml_result.probability:.2%}, driven primarily by "
-        f"{', '.join(f.feature for f in ml_result.top_positive_features[:3]) or 'no dominant features'}."
-    )
+    if eda_result is not None:
+        parts.append(
+            "Exploratory analysis covered "
+            f"{eda_result.summary.get('rows')} rows with class distribution "
+            f"{eda_result.class_distribution}."
+        )
 
-    parts.append(
-        f"Combining both signals, the fused risk assessment scored this "
-        f"transaction at {risk.final_score:.2f} ({risk.risk_level} risk), "
-        f"with a recommended action of: {risk.decision}."
-    )
-
-    if graph_metrics.hub_accounts or graph_metrics.mule_accounts:
+    if graph_metrics is not None:
         parts.append(
             "Network analysis flagged "
             f"{len(graph_metrics.hub_accounts)} hub account(s) and "
@@ -98,42 +116,39 @@ def _fallback_report(validation, rule_result, ml_result, risk, graph_metrics) ->
             "in the surrounding transaction graph."
         )
 
+    if risk_assessment is not None:
+        parts.append(f"Recommended action: {risk_assessment.decision}.")
+
     return " ".join(parts)
 
 
 def generate_investigation_report(
     validation,
-    rule_result,
-    ml_result,
-    risk,
+    evaluated_transactions,
+    eda_result,
     graph_metrics,
+    risk_assessment,
+    execution_trace,
+    user_query="",
 ) -> str:
-    """Generate a natural-language investigation narrative from real evidence."""
+    """Generate a natural-language investigation narrative from real,
+    plan-gated evidence. Exactly one LLM call per request, regardless of how
+    many transactions are summarized."""
 
     logger.info("[Agent: EvidenceExplainer] Generating investigation narrative.")
 
+    tools_executed = [name for name, ran in (execution_trace or {}).items() if ran]
+
     prompt = PROMPT_TEMPLATE.format(
+        user_query=user_query or "(none provided)",
+        tools_executed=tools_executed or "validation only",
         total_rows=validation.total_rows,
         total_columns=validation.total_columns,
         duplicate_rows=validation.duplicate_rows,
         missing_columns=validation.missing_columns or "none",
-        triggered_rules=rule_result.triggered_rules or "none",
-        rule_score=rule_result.risk_score,
-        rule_explanations=rule_result.explanations or "none",
-        ml_probability=ml_result.probability,
-        ml_prediction=ml_result.prediction,
-        ml_top_positive=[f.feature for f in ml_result.top_positive_features] or "none",
-        ml_top_negative=[f.feature for f in ml_result.top_negative_features] or "none",
-        final_score=risk.final_score,
-        risk_level=risk.risk_level,
-        decision=risk.decision,
-        reasons=risk.reasons or "none",
-        node_count=graph_metrics.node_count,
-        edge_count=graph_metrics.edge_count,
-        num_components=graph_metrics.num_components,
-        hub_accounts=graph_metrics.hub_accounts or "none",
-        mule_accounts=graph_metrics.mule_accounts or "none",
-        cycle_count=len(graph_metrics.cycles),
+        eda_section=_eda_section(eda_result),
+        transactions_section=_transactions_section(evaluated_transactions),
+        graph_section=_graph_section(graph_metrics),
     )
 
     try:
@@ -151,4 +166,4 @@ def generate_investigation_report(
         logger.error(
             f"Investigation narrative generation failed: {type(e).__name__}: {e}"
         )
-        return _fallback_report(validation, rule_result, ml_result, risk, graph_metrics)
+        return _fallback_report(validation, evaluated_transactions, eda_result, graph_metrics, risk_assessment)

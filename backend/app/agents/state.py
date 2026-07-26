@@ -76,25 +76,40 @@ class AgentState(BaseModel):
     )
 
     # --- Real Analytics Evidence ---
-    # Populated by the caller (investigation_service.run_investigation) before
-    # the graph is invoked. These are the dataclass outputs of the real
-    # `analytics` pipeline (validation, rule engine, ML inference, risk
-    # fusion, graph analytics) — the graph reasons over this evidence rather
-    # than recomputing fraud detection itself.
+    # `features_df` is populated by the caller (investigation_service) before
+    # the graph is invoked — the fully preprocessed + engineered dataframe,
+    # unfiltered. `node_execute` filters it (app.agents.filters.apply_filters)
+    # and conditionally runs analytics tools per `execution_plan`, populating
+    # the remaining evidence fields below. The graph reasons over this
+    # evidence rather than recomputing fraud detection itself.
+    features_df: Optional[Any] = Field(
+        default=None, description="Preprocessed + engineered pandas DataFrame"
+    )
     validation: Optional[Any] = Field(
         default=None, description="analytics.data.validator.ValidationReport"
     )
+    eda_result: Optional[Any] = Field(
+        default=None, description="analytics.interfaces.EDAResult (only if 'run_eda' was planned)"
+    )
     rule_result: Optional[Any] = Field(
-        default=None, description="analytics.interfaces.RuleResult"
+        default=None, description="analytics.interfaces.RuleResult (best transaction)"
     )
     ml_result: Optional[Any] = Field(
-        default=None, description="analytics.ml.schemas.MLResult"
+        default=None, description="analytics.ml.schemas.MLResult (best transaction)"
     )
     risk_assessment: Optional[Any] = Field(
-        default=None, description="analytics.interfaces.RiskAssessment"
+        default=None, description="analytics.interfaces.RiskAssessment (best transaction)"
     )
     graph_metrics: Optional[Any] = Field(
-        default=None, description="analytics.graph.schemas.GraphMetrics"
+        default=None, description="analytics.graph.schemas.GraphMetrics (only if 'analyze_graph' was planned)"
+    )
+    evaluated_transactions: Optional[Any] = Field(
+        default=None,
+        description="Top-N (index, row, rule_result, ml_result, risk) tuples, only if scoring ran",
+    )
+    execution_trace: dict[str, bool] = Field(
+        default_factory=dict,
+        description="Which analytics tools actually executed, e.g. {'eda': False, 'rules': True, ...}",
     )
 
     # --- Explanation (Phase 8) ---
@@ -137,11 +152,15 @@ class AgentStateDict(TypedDict, total=False):
     parsed_intent: Optional[dict[str, Any]]
     entities: dict[str, Any]
     execution_plan: list[str]
+    features_df: Optional[Any]
     validation: Optional[Any]
+    eda_result: Optional[Any]
     rule_result: Optional[Any]
     ml_result: Optional[Any]
     risk_assessment: Optional[Any]
     graph_metrics: Optional[Any]
+    evaluated_transactions: Optional[Any]
+    execution_trace: dict[str, bool]
     explanation: Optional[str]
     recommendation: Optional[str]
     trace: list[str]

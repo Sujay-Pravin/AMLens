@@ -9,7 +9,7 @@ import io
 import time
 
 import pandas as pd
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 
 from app.config.settings import settings
 from app.core.logging import get_logger
@@ -57,25 +57,27 @@ async def upload_file(request: Request):
 
 
 @router.post("/investigate", response_model=InvestigationResponse, tags=["Investigation"])
-async def investigate(file: UploadFile = File(...)):
+async def investigate(file: UploadFile = File(...), query: str = Form(default="")):
     """
-    Run the real analytics pipeline (validation, feature engineering, rule
-    engine, ML inference + SHAP, risk fusion, graph analytics) on an uploaded
-    transaction CSV, and return the evidence plus an LLM-generated
-    investigation narrative for the highest-risk transaction found.
+    Run the query-driven analytics pipeline on an uploaded transaction CSV.
+    The user's natural-language query is parsed into structured intent and
+    filters, which the planner uses to decide which analytics tools
+    (EDA, rule engine, ML inference + SHAP, risk fusion, graph analytics)
+    actually execute, and return the evidence plus an LLM-generated
+    investigation narrative.
     """
     start_time = time.time()
-    logger.info(f"Received investigation request for file: '{file.filename}'")
+    logger.info(f"Received investigation request for file: '{file.filename}', query: '{query}'")
 
     raw_bytes = await file.read()
     df = pd.read_csv(io.BytesIO(raw_bytes))
 
-    result = run_investigation(df, filename=file.filename or "uploaded.csv")
+    result = run_investigation(df, filename=file.filename or "uploaded.csv", query=query)
 
     elapsed = time.time() - start_time
     logger.info(
         f"Investigation completed in {elapsed:.2f}s. "
-        f"Top risk level: {result.risk.risk_level}"
+        f"Execution trace: {result.execution_trace}"
     )
 
     return result
