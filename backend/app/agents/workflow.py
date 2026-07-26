@@ -14,7 +14,6 @@ from langgraph.graph import StateGraph, END
 from app.agents.state import AgentStateDict, dict_to_state, state_to_dict
 from app.agents.intent_parser import parse_intent
 from app.agents.planner import plan
-from app.tools.tool_manager import call_tool
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -52,51 +51,47 @@ def node_plan(state: AgentStateDict) -> AgentStateDict:
 
 
 def node_execute(state: AgentStateDict) -> AgentStateDict:
-    """Node 3: Execute the planned analytics tools sequentially."""
-    execution_plan = state.get("execution_plan", [])
-    filters = state.get("filters", {})
-    logger.info(f"[Node: execute] Running tools: {execution_plan}")
-    
-    tool_outputs = state.get("tool_outputs", {}).copy()
+    """Node 3: Confirm the real analytics evidence for this state is present.
+
+    Analytics (validation, rule engine, ML inference, risk fusion, graph
+    analytics) has already run exactly once, upstream, in
+    investigation_service.run_investigation() — this node does not call any
+    analytics tool itself. It exists so the graph's shape (intent → plan →
+    execute → explain → recommend) is preserved, and so downstream nodes can
+    rely on evidence having been validated before they run.
+    """
     errors = state.get("errors", []).copy()
-    risk_results = state.get("risk_results")
-    
-    for tool_name in execution_plan:
-        kwargs: dict[str, Any] = {"filters": filters}
-        
-        # calculate_risk has a special signature (requires outputs from previous tools)
-        if tool_name == "calculate_risk":
-            kwargs = {
-                "rule_out": tool_outputs.get("detect_rules", {}),
-                "ml_out": tool_outputs.get("detect_anomalies", {})
-            }
-            
-        output = call_tool(tool_name, **kwargs)
-        
-        if "error" in output:
-            errors.append(output["error"])
-        else:
-            if tool_name == "calculate_risk":
-                risk_results = output
-            else:
-                tool_outputs[tool_name] = output
+
+    required = ("validation", "rule_result", "ml_result", "risk_assessment", "graph_metrics")
+    missing = [name for name in required if state.get(name) is None]
+    if missing:
+        errors.append(f"Missing real analytics evidence for: {', '.join(missing)}")
+
+    logger.info(
+        "[Node: execute] Real analytics evidence present."
+        if not missing else f"[Node: execute] Missing evidence: {missing}"
+    )
 
     return {
-        "tool_outputs": tool_outputs,
-        "risk_results": risk_results,
         "errors": errors,
         "trace": state.get("trace", []) + ["tools_executed"]
     }
 
 
 def node_explain(state: AgentStateDict) -> AgentStateDict:
-    """Node 4: Generate a compliance narrative explaining the results."""
-    from app.agents.explainer import explain
-    
-    logger.info("[Node: explain] Generating explanation via LLM")
-    
-    explanation = explain(state)
-    
+    """Node 4: Generate a compliance narrative explaining the real evidence."""
+    from app.agents.evidence_explainer import generate_investigation_report
+
+    logger.info("[Node: explain] Generating investigation narrative via LLM")
+
+    explanation = generate_investigation_report(
+        state.get("validation"),
+        state.get("rule_result"),
+        state.get("ml_result"),
+        state.get("risk_assessment"),
+        state.get("graph_metrics"),
+    )
+
     return {
         "explanation": explanation,
         "trace": state.get("trace", []) + ["explanation_generated"]
@@ -104,13 +99,13 @@ def node_explain(state: AgentStateDict) -> AgentStateDict:
 
 
 def node_recommend(state: AgentStateDict) -> AgentStateDict:
-    """Node 5: Generate a final recommendation based on the risk band."""
+    """Node 5: Surface the final recommendation from the fused risk assessment."""
     from app.agents.recommender import recommend
-    
+
     logger.info("[Node: recommend] Generating recommendation")
-    
+
     recommendation = recommend(state)
-    
+
     return {
         "recommendation": recommendation,
         "trace": state.get("trace", []) + ["recommendation_generated"]

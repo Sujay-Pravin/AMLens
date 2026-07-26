@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AMLens — AML Investigation</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; background: #fafafa; }
+  h1 { margin-bottom: 0.25rem; }
+  .subtitle { color: #666; margin-top: 0; }
+  .upload-bar { display: flex; gap: 0.5rem; align-items: center; margin: 1.5rem 0; }
+  button { padding: 0.5rem 1rem; cursor: pointer; border: 1px solid #333; background: #1a1a1a; color: white; border-radius: 4px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .card { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+  .card h2 { margin-top: 0; font-size: 1.1rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; }
+  th { color: #666; font-weight: 600; }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 12px; font-size: 0.8rem; font-weight: 600; }
+  .badge.Low { background: #dcf5e0; color: #1a7431; }
+  .badge.Medium { background: #fff3cd; color: #8a6100; }
+  .badge.High { background: #ffe0cc; color: #a1440c; }
+  .badge.Critical { background: #ffd6d6; color: #a10c0c; }
+  .report { white-space: pre-wrap; line-height: 1.5; }
+  #status { color: #666; margin-left: 0.5rem; }
+  .error { color: #a10c0c; }
+</style>
+</head>
+<body>
+
+<h1>AMLens — AML Investigation</h1>
+<p class="subtitle">Upload a transaction CSV to run the analytics pipeline (validation, rules, ML + SHAP, risk fusion, graph analytics) and generate an AI investigation report.</p>
+
+<div class="upload-bar">
+  <input type="file" id="fileInput" accept=".csv">
+  <button id="runBtn">Run Investigation</button>
+  <span id="status"></span>
+</div>
+
+<div id="results"></div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const runBtn = document.getElementById('runBtn');
+const statusEl = document.getElementById('status');
+const results = document.getElementById('results');
+
+function badge(level) {
+  return `<span class="badge ${level}">${level}</span>`;
+}
+
+function renderList(items) {
+  if (!items || items.length === 0) return '<em>none</em>';
+  return '<ul>' + items.map(i => `<li>${i}</li>`).join('') + '</ul>';
+}
+
+function renderTable(rows, columns) {
+  const head = columns.map(c => `<th>${c}</th>`).join('');
+  const body = rows.map(r => '<tr>' + columns.map(c => `<td>${r[c]}</td>`).join('') + '</tr>').join('');
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function render(data) {
+  results.innerHTML = `
+    <div class="card">
+      <h2>Validation Summary</h2>
+      <p><b>File:</b> ${data.filename}</p>
+      <p><b>Rows:</b> ${data.validation.total_rows} &nbsp; <b>Columns:</b> ${data.validation.total_columns} &nbsp;
+         <b>Duplicates removed:</b> ${data.validation.duplicate_rows}</p>
+      <p><b>Missing columns:</b> ${data.validation.missing_columns.length ? data.validation.missing_columns.join(', ') : 'none'}</p>
+    </div>
+
+    <div class="card">
+      <h2>Highest-Risk Transaction</h2>
+      <p>Row #${data.top_transaction.row_index}: ${data.top_transaction.sender_entity_id} &rarr; ${data.top_transaction.receiver_entity_id},
+         amount ${data.top_transaction.amount_paid.toFixed(2)} &mdash; ${badge(data.top_transaction.risk_level)}</p>
+    </div>
+
+    <div class="card">
+      <h2>Rule Engine Findings</h2>
+      <p><b>Rule risk score:</b> ${data.rules.risk_score}</p>
+      <p><b>Triggered rules:</b> ${renderList(data.rules.triggered_rules)}</p>
+      <p><b>Explanations:</b> ${renderList(data.rules.explanations)}</p>
+    </div>
+
+    <div class="card">
+      <h2>ML Prediction</h2>
+      <p><b>Prediction:</b> ${data.ml.prediction ? 'Suspicious (1)' : 'Not suspicious (0)'} &nbsp;
+         <b>Fraud probability:</b> ${(data.ml.probability * 100).toFixed(2)}%</p>
+      <h3>Top SHAP Features (increasing risk)</h3>
+      ${renderTable(data.ml.top_positive_features, ['feature', 'value', 'impact'])}
+      <h3>Top SHAP Features (decreasing risk)</h3>
+      ${renderTable(data.ml.top_negative_features, ['feature', 'value', 'impact'])}
+    </div>
+
+    <div class="card">
+      <h2>Risk Assessment</h2>
+      <p><b>Final score:</b> ${data.risk.final_score.toFixed(4)} &nbsp; ${badge(data.risk.risk_level)}</p>
+      <p><b>Decision:</b> ${data.risk.decision}</p>
+      <p><b>Reasons:</b> ${renderList(data.risk.reasons)}</p>
+    </div>
+
+    <div class="card">
+      <h2>Graph Metrics</h2>
+      <p><b>Accounts:</b> ${data.graph.node_count} &nbsp; <b>Transfers:</b> ${data.graph.edge_count} &nbsp;
+         <b>Connected clusters:</b> ${data.graph.num_components} &nbsp; <b>Cycles found:</b> ${data.graph.cycles.length}</p>
+      <p><b>Hub accounts:</b> ${renderList(data.graph.hub_accounts)}</p>
+      <p><b>Suspected mule accounts:</b> ${renderList(data.graph.mule_accounts)}</p>
+    </div>
+
+    <div class="card">
+      <h2>All Scored Transactions (${data.transactions.length})</h2>
+      ${renderTable(
+        data.transactions.map(t => ({...t, final_score: t.final_score.toFixed(3)})),
+        ['row_index', 'sender_entity_id', 'receiver_entity_id', 'amount_paid', 'final_score', 'risk_level']
+      )}
+    </div>
+
+    <div class="card">
+      <h2>Final AI Investigation Report</h2>
+      <p class="report">${data.investigation_report}</p>
+      <p><b>Recommendation:</b> ${data.recommendation}</p>
+    </div>
+  `;
+}
+
+runBtn.addEventListener('click', async () => {
+  const file = fileInput.files[0];
+  if (!file) {
+    statusEl.textContent = 'Please choose a CSV file first.';
+    statusEl.className = 'error';
+    return;
+  }
+
+  statusEl.className = '';
+  statusEl.textContent = 'Running investigation...';
+  runBtn.disabled = true;
+  results.innerHTML = '';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch('/investigate', { method: 'POST', body: formData });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || `Request failed with status ${res.status}`);
+    }
+    const data = await res.json();
+    render(data);
+    statusEl.textContent = 'Done.';
+  } catch (e) {
+    statusEl.className = 'error';
+    statusEl.textContent = 'Error: ' + e.message;
+  } finally {
+    runBtn.disabled = false;
+  }
+});
+</script>
+
+</body>
+</html>

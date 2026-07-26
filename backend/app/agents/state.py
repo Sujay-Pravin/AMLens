@@ -29,10 +29,15 @@ class AgentState(BaseModel):
 
         START → intent_parser (parsed_intent, entities)
               → planner (execution_plan)
-              → executor (tool_outputs, risk_results)
+              → executor (validates real analytics evidence is present)
               → explainer (explanation)
               → recommender (recommendation)
               → END
+
+    The real analytics evidence (validation, rule_result, ml_result,
+    risk_assessment, graph_metrics) is computed once, upfront, by
+    investigation_service.run_investigation() and passed in via the initial
+    state — the graph reasons over it, it does not recompute it.
     """
 
     # --- Input ---
@@ -70,17 +75,26 @@ class AgentState(BaseModel):
         ),
     )
 
-    # --- Tool Execution (Phase 6) ---
-    tool_outputs: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Map of tool_name → output dict from each executed tool",
+    # --- Real Analytics Evidence ---
+    # Populated by the caller (investigation_service.run_investigation) before
+    # the graph is invoked. These are the dataclass outputs of the real
+    # `analytics` pipeline (validation, rule engine, ML inference, risk
+    # fusion, graph analytics) — the graph reasons over this evidence rather
+    # than recomputing fraud detection itself.
+    validation: Optional[Any] = Field(
+        default=None, description="analytics.data.validator.ValidationReport"
     )
-    risk_results: Optional[dict[str, Any]] = Field(
-        default=None,
-        description=(
-            "Composite risk assessment from calculate_risk. "
-            "Keys: risk_score (float), risk_band ('Low'|'Medium'|'High'|'Critical')"
-        ),
+    rule_result: Optional[Any] = Field(
+        default=None, description="analytics.interfaces.RuleResult"
+    )
+    ml_result: Optional[Any] = Field(
+        default=None, description="analytics.ml.schemas.MLResult"
+    )
+    risk_assessment: Optional[Any] = Field(
+        default=None, description="analytics.interfaces.RiskAssessment"
+    )
+    graph_metrics: Optional[Any] = Field(
+        default=None, description="analytics.graph.schemas.GraphMetrics"
     )
 
     # --- Explanation (Phase 8) ---
@@ -123,8 +137,11 @@ class AgentStateDict(TypedDict, total=False):
     parsed_intent: Optional[dict[str, Any]]
     entities: dict[str, Any]
     execution_plan: list[str]
-    tool_outputs: dict[str, Any]
-    risk_results: Optional[dict[str, Any]]
+    validation: Optional[Any]
+    rule_result: Optional[Any]
+    ml_result: Optional[Any]
+    risk_assessment: Optional[Any]
+    graph_metrics: Optional[Any]
     explanation: Optional[str]
     recommendation: Optional[str]
     trace: list[str]

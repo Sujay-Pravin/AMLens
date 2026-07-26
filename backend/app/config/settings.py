@@ -34,12 +34,6 @@ class Settings(BaseSettings):
         description="Allowed CORS origins (React dev servers)",
     )
 
-    # --- Feature flags ---
-    use_dummy_analytics: bool = Field(
-        default=True,
-        description="Use dummy analytics module instead of Member 2's real module",
-    )
-
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

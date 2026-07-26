@@ -6,9 +6,11 @@ Run with:
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config.settings import settings
 from app.core.logging import setup_logging, get_logger
@@ -25,7 +27,6 @@ async def lifespan(app: FastAPI):
     logger.info("AMLens API starting up")
     logger.info(f"  Environment : {settings.env}")
     logger.info(f"  Gemini Model: {settings.gemini_model}")
-    logger.info(f"  Dummy tools : {settings.use_dummy_analytics}")
     logger.info("=" * 60)
     yield
     logger.info("AMLens API shutting down")
@@ -58,7 +59,12 @@ def create_app() -> FastAPI:
     # --- Routes ---
     from app.api.routes import router
     app.include_router(router)
-    
+
+    # --- Minimal hackathon frontend (temporary; same-origin, no CORS needed) ---
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    if static_dir.exists():
+        app.mount("/ui", StaticFiles(directory=str(static_dir), html=True), name="ui")
+
     return app
 
 
